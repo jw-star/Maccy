@@ -73,6 +73,25 @@ class HistoryItemTests: XCTestCase {
     let url = URL(fileURLWithPath: "/tmp/foo.bar")
     let item = historyItem(url)
     XCTAssertEqual(item.title, "file:///tmp/foo.bar")
+    XCTAssertFalse(item.hasImage)
+  }
+
+  func testCopiedJpegFileDoesNotUseItsPathAsTitle() throws {
+    let url = try jpegFile(named: "2026-08-16 13.22.40.jpg")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let item = historyItem(url)
+    XCTAssertTrue(item.hasImage)
+    XCTAssertEqual(item.title, "")
+    XCTAssertEqual(item.storedImageData, nil)
+    XCTAssertNotNil(item.imageData)
+  }
+
+  func testMissingImageFileKeepsItsPath() {
+    let url = URL(fileURLWithPath: "/tmp/2026-08-16 13.22.40.jpg")
+    let item = historyItem(url)
+    XCTAssertFalse(item.hasImage)
+    XCTAssertEqual(item.title, "file:///tmp/2026-08-16 13.22.40.jpg")
   }
 
   func testFileWithEscapedChars() {
@@ -193,6 +212,25 @@ class HistoryItemTests: XCTestCase {
     item.title = item.generateTitle()
 
     return item
+  }
+
+  private func jpegFile(named name: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+    let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: 8,
+      pixelsHigh: 4,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    )!
+    let data = try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:]))
+    try data.write(to: url)
+    return url
   }
 
   private func historyItem(_ value: URL) -> HistoryItem {

@@ -17,6 +17,20 @@ extension NSImage {
     return imageGeometry(of: source)?.pixelSize
   }
 
+  nonisolated static func pixelSize(of url: URL) -> NSSize? {
+    let accessed = url.startAccessingSecurityScopedResource()
+    defer {
+      if accessed {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+      return nil
+    }
+
+    return imageGeometry(of: source)?.pixelSize
+  }
+
   /// Decodes only as many pixels as needed to fit `maxSize` points at `scale`.
   /// The resulting `size` is in points and is never bigger than the original image.
   @concurrent
@@ -25,12 +39,48 @@ extension NSImage {
     fitting maxSize: NSSize,
     scale: CGFloat
   ) async -> DownsampledImage? {
-    let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
-    guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions),
-          let geometry = imageGeometry(of: source),
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+      return nil
+    }
+
+    return downsampled(from: source, fitting: maxSize, scale: scale)
+  }
+
+  /// Same as the data variant, reading the file only at the thumbnail size.
+  @concurrent
+  nonisolated static func downsampled(
+    from url: URL,
+    fitting maxSize: NSSize,
+    scale: CGFloat
+  ) async -> DownsampledImage? {
+    let accessed = url.startAccessingSecurityScopedResource()
+    defer {
+      if accessed {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+      return nil
+    }
+
+    return downsampled(from: source, fitting: maxSize, scale: scale)
+  }
+
+  private nonisolated static func downsampled(
+    from source: CGImageSource,
+    fitting maxSize: NSSize,
+    scale: CGFloat
+  ) -> DownsampledImage? {
+    guard let geometry = imageGeometry(of: source),
           geometry.pointSize.width > 0,
           geometry.pointSize.height > 0 else {
-      return nil
+      // Header we don't understand: still produce a thumbnail at the target size.
+      // https://github.com/p0deje/Maccy/pull/1550
+      return thumbnail(
+        from: source,
+        maxPixelSize: max(maxSize.width, maxSize.height) * max(scale, 1),
+        scale: scale
+      )
     }
 
     let ratio = min(
@@ -47,11 +97,20 @@ extension NSImage {
       max(geometry.pixelSize.width, geometry.pixelSize.height)
     )
 
+    return thumbnail(from: source, maxPixelSize: maxPixelSize, scale: scale, pointSize: size)
+  }
+
+  private nonisolated static func thumbnail(
+    from source: CGImageSource,
+    maxPixelSize: CGFloat,
+    scale: CGFloat,
+    pointSize: NSSize? = nil
+  ) -> DownsampledImage? {
     let thumbnailOptions = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,
       kCGImageSourceCreateThumbnailWithTransform: true,
       kCGImageSourceShouldCacheImmediately: true,
-      kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+      kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize)
     ] as CFDictionary
     guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
       source,
@@ -61,6 +120,10 @@ extension NSImage {
       return nil
     }
 
+    let size = pointSize ?? NSSize(
+      width: max(CGFloat(cgImage.width) / max(scale, 1), 1),
+      height: max(CGFloat(cgImage.height) / max(scale, 1), 1)
+    )
     return DownsampledImage(cgImage: cgImage, size: size)
   }
 
