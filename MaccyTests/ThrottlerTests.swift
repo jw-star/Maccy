@@ -1,6 +1,7 @@
 import XCTest
 @testable import Maccy
 
+@MainActor
 class ThrottlerTests: XCTestCase {
   func testRunsImmediatelyWhenMinimumDelayHasPassed() {
     let throttler = Throttler(minimumDelay: 10)
