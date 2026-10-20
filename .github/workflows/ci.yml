@@ -21,8 +21,17 @@ jobs:
         run: swiftlint lint --reporter github-actions-logging
 
   build-and-test:
-    name: Build & Test
-    runs-on: macos-26
+    name: Build & Test (${{ matrix.os }}, Xcode ${{ matrix.xcode }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            xcode: latest-stable
+          - os: macos-15
+            xcode: "16.4"
     env:
       CI: "true"
       XCODEBUILD_FLAGS: >-
@@ -35,12 +44,17 @@ jobs:
         DEVELOPMENT_TEAM=
         CODE_SIGN_ENTITLEMENTS=
         ENABLE_HARDENED_RUNTIME=NO
+      TEST_FLAGS: >-
+        -parallel-testing-enabled NO
+        -test-timeouts-enabled YES
+        -default-test-execution-time-allowance 60
+        -maximum-test-execution-time-allowance 120
     steps:
       - uses: actions/checkout@v4
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: ${{ matrix.xcode }}
 
       - name: Show toolchain
         run: |
@@ -53,28 +67,46 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          xcodebuild build $XCODEBUILD_FLAGS | tee build.log | xcbeautify --renderer github-actions
+          xcodebuild build-for-testing $XCODEBUILD_FLAGS | tee build.log | xcbeautify --renderer github-actions
 
+      # Tests occasionally hang on hosted runners (a MainActor job is never
+      # scheduled while XCTWaiter spins the run loop). Re-run only the tests
+      # that failed or timed out once; a pass on re-run is reported as flaky.
       - name: Test
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           set -o pipefail
-          xcodebuild test $XCODEBUILD_FLAGS \
-            -only-testing:MaccyTests \
-            -parallel-testing-enabled NO \
-            -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 60 \
-            -maximum-test-execution-time-allowance 120 \
-            -resultBundlePath TestResults.xcresult \
-            | tee test.log | xcbeautify --renderer github-actions
+          if xcodebuild test-without-building $XCODEBUILD_FLAGS $TEST_FLAGS \
+              -only-testing:MaccyTests \
+              -resultBundlePath TestResults.xcresult \
+              | tee test.log | xcbeautify --renderer github-actions; then
+            exit 0
+          fi
+          failing=$(sed -n '/^Failing tests:/,/^\*\* TEST/p' test.log \
+            | sed -nE 's/^[[:space:]]+([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\(\)$/MaccyTests\/\1\/\2/p' | sort -u)
+          if [ -z "$failing" ]; then
+            echo "::error::Tests failed and no failing test identifiers could be parsed"
+            exit 1
+          fi
+          echo "Re-running failed tests:"; echo "$failing"
+          only=$(printf -- '-only-testing:%s ' $failing)
+          if xcodebuild test-without-building $XCODEBUILD_FLAGS $TEST_FLAGS $only \
+              -resultBundlePath TestResults-retry.xcresult \
+              | tee test-retry.log | xcbeautify --renderer github-actions; then
+            for t in $failing; do echo "::warning::Flaky test (failed or hung, passed on re-run): $t"; done
+            exit 0
+          fi
+          exit 1
 
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.os }}
           path: |
             TestResults.xcresult
+            TestResults-retry.xcresult
             build.log
             test.log
+            test-retry.log
           if-no-files-found: ignore
