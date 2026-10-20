@@ -87,7 +87,10 @@ struct GeneralSettingsPane: View {
         Defaults.Toggle(key: .pasteByDefault) {
           Text("PasteAutomatically", tableName: "GeneralSettings")
         }
-        .onChange(refreshModifiers)
+        .onChange { isOn in
+          updatePasteByDefault(isOn)
+          refreshModifiers(isOn)
+        }
         .fixedSize()
 
         Defaults.Toggle(key: .removeFormattingByDefault) {
@@ -113,6 +116,26 @@ struct GeneralSettingsPane: View {
         }
       }
     }
+  }
+
+  @MainActor
+  static func updatePasteByDefault(
+    _ enabled: Bool,
+    openAccessibilitySettings: @MainActor () -> Void = { Accessibility.openSystemSettings() },
+    hasAccess: () -> Bool = { Accessibility.check() }
+  ) {
+    // Turning paste on needs Accessibility. Leave the toggle off until it is actually granted.
+    let granted = !enabled || hasAccess()
+    if enabled && !granted {
+      openAccessibilitySettings()
+    }
+
+    let resolved = enabled && granted
+    guard Defaults[.pasteByDefault] != resolved else {
+      return
+    }
+
+    Defaults[.pasteByDefault] = resolved
   }
 
   private func refreshModifiers(_ sender: Sendable) {
