@@ -59,21 +59,46 @@ class HistoryItemDecoratorTests: XCTestCase {
     XCTAssertNil(itemDecorator.thumbnailImage)
   }
 
-  func testImage() {
-    let image = NSImage(named: "StatusBarMenuImage")!
-    let itemDecorator = historyItemDecorator(image)
-    itemDecorator.sizeImages()
+  func testImage() async {
+    let itemDecorator = historyItemDecorator(pngData(width: 20, height: 10), .png)
     XCTAssertEqual(itemDecorator.title, "")
-    XCTAssertEqual(itemDecorator.previewImage!.size, image.size)
-    XCTAssertEqual(itemDecorator.thumbnailImage!.size, image.size)
+    XCTAssertTrue(itemDecorator.hasImage)
+    XCTAssertNil(itemDecorator.previewImage)
+    XCTAssertNil(itemDecorator.thumbnailImage)
+
+    let previewImage = await itemDecorator.asyncGetPreviewImage()
+    let thumbnailImage = await itemDecorator.asyncGetThumbnailImage()
+    XCTAssertEqual(previewImage?.size, NSSize(width: 20, height: 10))
+    XCTAssertEqual(thumbnailImage?.size, NSSize(width: 20, height: 10))
   }
 
-  // We also need to add test for image with width bigger than max width.
-  func testImageWithHeightBiggerThanMaxHeight() {
-    let image = NSImage(named: "NSApplicationIcon")!
-    let itemDecorator = historyItemDecorator(image)
-    itemDecorator.sizeImages()
-    XCTAssertEqual(itemDecorator.thumbnailImage!.size, NSSize(width: 40, height: 40))
+  func testImageWithHeightBiggerThanMaxHeight() async {
+    let itemDecorator = historyItemDecorator(pngData(width: 200, height: 100), .png)
+    let thumbnailImage = await itemDecorator.asyncGetThumbnailImage()
+    XCTAssertEqual(thumbnailImage?.size, NSSize(width: 80, height: 40))
+    XCTAssertEqual(itemDecorator.imagePixelSize, NSSize(width: 200, height: 100))
+  }
+
+  func testCleanupImagesAllowsRegeneration() async {
+    let itemDecorator = historyItemDecorator(pngData(width: 200, height: 100), .png)
+    _ = await itemDecorator.asyncGetThumbnailImage()
+    itemDecorator.cleanupImages()
+    XCTAssertNil(itemDecorator.thumbnailImage)
+
+    Defaults[.imageMaxHeight] = 20
+    let thumbnailImage = await itemDecorator.asyncGetThumbnailImage()
+    XCTAssertEqual(thumbnailImage?.size, NSSize(width: 40, height: 20))
+  }
+
+  func testPreviewText() {
+    let itemDecorator = historyItemDecorator("foo")
+    XCTAssertEqual(itemDecorator.previewText.string, "foo")
+    XCTAssertEqual(itemDecorator.text, "foo")
+  }
+
+  func testAccessibilityLabel() {
+    let itemDecorator = historyItemDecorator("foo", application: nil)
+    XCTAssertEqual(itemDecorator.accessibilityLabel, "foo")
   }
 
   func testFile() {
@@ -214,6 +239,22 @@ class HistoryItemDecoratorTests: XCTestCase {
     item.numberOfCopies = 2
 
     return HistoryItemDecorator(item)
+  }
+
+  private func pngData(width: Int, height: Int) -> Data {
+    let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: width,
+      pixelsHigh: height,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    )!
+    return bitmap.representation(using: .png, properties: [:])!
   }
 
   // swiftlint:disable:next identifier_name

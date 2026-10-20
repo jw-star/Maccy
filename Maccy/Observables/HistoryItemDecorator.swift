@@ -5,7 +5,7 @@ import Observation
 import Sauce
 
 @Observable
-class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
+class HistoryItemDecorator: Identifiable, Hashable, HasVisibility { // swiftlint:disable:this type_body_length
   private static let previewMaxParagraphSize = 10_000
 
   static func == (lhs: HistoryItemDecorator, rhs: HistoryItemDecorator) -> Bool {
@@ -32,31 +32,68 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
       return "iCloud"
     }
 
-    guard let bundle = item.application,
-      let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle)
-    else {
+    guard let bundle = item.application else {
       return nil
     }
 
-    return url.deletingPathExtension().lastPathComponent
+    // Rows read this on every render, so avoid repeating the LaunchServices lookup.
+    if let resolvedApplication, resolvedApplication.bundle == bundle {
+      return resolvedApplication.name
+    }
+
+    let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle)?
+      .deletingPathExtension()
+      .lastPathComponent
+    resolvedApplication = (bundle, name)
+    return name
   }
 
-  var hasImage: Bool { item.image != nil }
+  var hasImage: Bool { item.hasImage }
   var hasFileURLs: Bool { !item.fileURLs.isEmpty }
   var hasPlainText: Bool { item.text != nil }
-  var hasRichText: Bool { item.rtf != nil || item.html != nil }
+  var hasRichText: Bool { item.rtfData != nil || item.htmlData != nil }
 
   var previewImageGenerationTask: Task<(), Error>?
   var thumbnailImageGenerationTask: Task<(), Error>?
   var previewImage: NSImage?
-  private(set) var previewText = SizedString("")
   var thumbnailImage: NSImage?
-  var applicationImage: ApplicationImage
+
+  // Built on first access so that loading the history doesn't read every item's contents.
+  var previewText: SizedString {
+    _ = previewTextRevision
+    if let cachedPreviewText {
+      return cachedPreviewText
+    }
+
+    let previewText = withObservationTracking {
+      SizedString(item.previewableText, maxParagraphBytes: Self.previewMaxParagraphSize)
+    } onChange: { [weak self] in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.cachedPreviewText = nil
+        self.previewTextRevision += 1
+      }
+    }
+    cachedPreviewText = previewText
+    return previewText
+  }
+  private var previewTextRevision = 0
+  @ObservationIgnored
+  private var cachedPreviewText: SizedString?
+
+  @ObservationIgnored
+  private(set) lazy var applicationImage: ApplicationImage = ApplicationImageCache.shared.getImage(item: item)
 
   @ObservationIgnored
   private(set) lazy var imageSize: String? = item.imageData.map {
     ByteCountFormatter.string(fromByteCount: Int64($0.count), countStyle: .file)
   }
+
+  @ObservationIgnored
+  private(set) lazy var imagePixelSize: NSSize? = item.imageData.flatMap(NSImage.pixelSize(of:))
+
+  @ObservationIgnored
+  private var resolvedApplication: (bundle: String, name: String?)?
 
   // 10k characters seems to be more than enough on large displays
   var text: String { previewText.string.shortened(to: 10_000) }
@@ -83,8 +120,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   // Describe the complete item independently of its potentially truncated visual content.
   var accessibilityLabel: String {
     var parts: [String] = []
-    if hasImage, let image = item.image {
-      let size = image.pixelSize
+    if hasImage, let size = imagePixelSize {
       parts.append(
         String(
           format: NSLocalizedString("history_item_image_accessibility_label_no_app", comment: ""),
@@ -117,16 +153,14 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     self.item = item
     self.shortcuts = shortcuts
     self.title = item.title
-    self.applicationImage = ApplicationImageCache.shared.getImage(item: item)
 
     synchronizeItemPin()
     synchronizeItemTitle()
-    synchronizeItemText()
   }
 
   @MainActor
   func ensureThumbnailImage() {
-    guard item.image != nil else {
+    guard hasImage else {
       return
     }
     guard thumbnailImage == nil else {
@@ -136,13 +170,19 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
       return
     }
     thumbnailImageGenerationTask = Task { [weak self] in
-      self?.generateThumbnailImage()
+      guard let data = self?.item.imageData else { return }
+      let image = await HistoryItemDecorator.downsampledImage(
+        from: data,
+        fitting: HistoryItemDecorator.thumbnailImageSize
+      )
+      try Task.checkCancellation()
+      self?.thumbnailImage = image
     }
   }
 
   @MainActor
   func ensurePreviewImage() {
-    guard item.image != nil else {
+    guard hasImage else {
       return
     }
     guard previewImage == nil else {
@@ -152,7 +192,13 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
       return
     }
     previewImageGenerationTask = Task { [weak self] in
-      self?.generatePreviewImage()
+      guard let data = self?.item.imageData else { return }
+      let image = await HistoryItemDecorator.downsampledImage(
+        from: data,
+        fitting: HistoryItemDecorator.previewImageSize
+      )
+      try Task.checkCancellation()
+      self?.previewImage = image
     }
   }
 
@@ -167,9 +213,21 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   }
 
   @MainActor
+  func asyncGetThumbnailImage() async -> NSImage? {
+    if let image = thumbnailImage {
+      return image
+    }
+    ensureThumbnailImage()
+    _ = await thumbnailImageGenerationTask?.result
+    return thumbnailImage
+  }
+
+  @MainActor
   func cleanupImages() {
     thumbnailImageGenerationTask?.cancel()
     previewImageGenerationTask?.cancel()
+    thumbnailImageGenerationTask = nil
+    previewImageGenerationTask = nil
     thumbnailImage?.recache()
     previewImage?.recache()
     thumbnailImage = nil
@@ -178,25 +236,13 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   }
 
   @MainActor
-  private func generateThumbnailImage() {
-    guard let image = item.image else {
-      return
+  private static func downsampledImage(from data: Data, fitting size: NSSize) async -> NSImage? {
+    let scale = NSScreen.forPopup?.backingScaleFactor ?? 2
+    guard let image = await NSImage.downsampled(from: data, fitting: size, scale: scale) else {
+      return nil
     }
-    thumbnailImage = image.resized(to: HistoryItemDecorator.thumbnailImageSize)
-  }
 
-  @MainActor
-  private func generatePreviewImage() {
-    guard let image = item.image else {
-      return
-    }
-    previewImage = image.resized(to: HistoryItemDecorator.previewImageSize)
-  }
-
-  @MainActor
-  func sizeImages() {
-    generatePreviewImage()
-    generateThumbnailImage()
+    return NSImage(cgImage: image.cgImage, size: image.size)
   }
 
   func highlight(_ query: String, _ ranges: [Range<String.Index>]) {
@@ -250,16 +296,6 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
         guard let self else { return }
         self.title = self.item.title
         self.synchronizeItemTitle()
-      }
-    }
-  }
-
-  private func synchronizeItemText() {
-    previewText = withObservationTracking {
-      SizedString(item.previewableText, maxParagraphBytes: Self.previewMaxParagraphSize)
-    } onChange: { [weak self] in
-      DispatchQueue.main.async { [weak self] in
-        self?.synchronizeItemText()
       }
     }
   }

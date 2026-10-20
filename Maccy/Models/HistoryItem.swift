@@ -184,6 +184,8 @@ class HistoryItem {
     return data
   }
 
+  var hasImage: Bool { contentData(Self.imageTypes) != nil || universalClipboardImage }
+
   var image: NSImage? {
     if let img = cachedDecodedImage {
       return img
