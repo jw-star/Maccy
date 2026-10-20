@@ -1,0 +1,64 @@
+name: Package DMG
+
+on:
+  push:
+    branches: [master, "cursor/**-dmg-*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    name: Build Release DMG
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # Ad-hoc signed: keeps the sandbox entitlements (so history lives in the
+      # same container as the official build) but is not notarized.
+      - name: Build Release app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Maccy.xcodeproj \
+            -scheme Maccy \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath DerivedData \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= \
+            | tee build.log | xcbeautify --renderer github-actions
+
+      - name: Create DMG
+        run: |
+          app=DerivedData/Build/Products/Release/Maccy.app
+          codesign --verify --deep --verbose=2 "$app"
+          version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$app/Contents/Info.plist")
+          name="Maccy-${version}-$(git rev-parse --short HEAD)"
+          mkdir dmg-root
+          cp -R "$app" dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname Maccy -srcfolder dmg-root -ov -format UDZO "$name.dmg"
+          echo "DMG_NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DMG_NAME }}
+          path: ${{ env.DMG_NAME }}.dmg
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: package-build-log
+          path: build.log
+          if-no-files-found: ignore
