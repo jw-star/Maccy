@@ -1,0 +1,91 @@
+name: Package DMG
+
+on:
+  push:
+    branches: [master, "cursor/**-dmg-*"]
+    tags: ["[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    name: Build Release DMG
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version from tag
+        if: github.ref_type == 'tag'
+        run: echo "VERSION_OVERRIDE=MARKETING_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # Ad-hoc signed: keeps the sandbox entitlements (so history lives in the
+      # same container as the official build) but is not notarized.
+      - name: Build Release app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Maccy.xcodeproj \
+            -scheme Maccy \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath DerivedData \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= \
+            $VERSION_OVERRIDE \
+            2>&1 | tee build.log | xcbeautify --renderer github-actions
+
+      - name: Create DMG
+        run: |
+          app=DerivedData/Build/Products/Release/Maccy.app
+          codesign --verify --deep --verbose=2 "$app"
+          lipo -info "$app/Contents/MacOS/Maccy"
+          version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$app/Contents/Info.plist")
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            name="Maccy-${version}"
+          else
+            name="Maccy-${version}-$(git rev-parse --short HEAD)"
+          fi
+          mkdir dmg-root
+          cp -R "$app" dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname Maccy -srcfolder dmg-root -ov -format UDZO "$name.dmg"
+          echo "DMG_NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DMG_NAME }}
+          path: ${{ env.DMG_NAME }}.dmg
+          if-no-files-found: error
+
+      # Release notes come from the annotated tag message.
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" > notes.md
+          gh release create "$GITHUB_REF_NAME" "$DMG_NAME.dmg" \
+            --title "Maccy $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: package-build-log
+          path: build.log
+          if-no-files-found: ignore
