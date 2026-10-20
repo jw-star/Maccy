@@ -33,6 +33,8 @@ jobs:
         CODE_SIGN_IDENTITY=-
         CODE_SIGNING_REQUIRED=NO
         DEVELOPMENT_TEAM=
+        CODE_SIGN_ENTITLEMENTS=
+        ENABLE_HARDENED_RUNTIME=NO
     steps:
       - uses: actions/checkout@v4
 
@@ -54,10 +56,15 @@ jobs:
           xcodebuild build $XCODEBUILD_FLAGS | tee build.log | xcbeautify --renderer github-actions
 
       - name: Test
+        timeout-minutes: 20
         run: |
           set -o pipefail
           xcodebuild test $XCODEBUILD_FLAGS \
             -only-testing:MaccyTests \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 60 \
+            -maximum-test-execution-time-allowance 120 \
             -resultBundlePath TestResults.xcresult \
             | tee test.log | xcbeautify --renderer github-actions
 
