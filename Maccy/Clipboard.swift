@@ -14,6 +14,9 @@ class Clipboard {
 
   private var timer: Timer?
 
+  private var compiledIgnoredRegexpPatterns: [String] = []
+  private var compiledIgnoredRegexps: [NSRegularExpression] = []
+
   private let dynamicTypePrefix = "dyn."
   private let microsoftSourcePrefix = "com.microsoft.ole.source."
   private let supportedTypes: Set<NSPasteboard.PasteboardType> = [
@@ -256,19 +259,24 @@ class Clipboard {
   }
 
   private func shouldIgnore(_ item: NSPasteboardItem) -> Bool {
-    for regexp in Defaults[.ignoreRegexp] {
-      if let string = item.string(forType: .string) {
-        do {
-          let regex = try NSRegularExpression(pattern: regexp)
-          if regex.numberOfMatches(in: string, range: NSRange(string.startIndex..., in: string)) > 0 {
-            return true
-          }
-        } catch {
-          return false
-        }
-      }
+    let regexps = ignoredRegexps
+    guard !regexps.isEmpty, let string = item.string(forType: .string) else {
+      return false
     }
-    return false
+
+    let range = NSRange(string.startIndex..., in: string)
+    return regexps.contains { $0.firstMatch(in: string, range: range) != nil }
+  }
+
+  // Invalid patterns are skipped so that they don't disable the remaining ones.
+  private var ignoredRegexps: [NSRegularExpression] {
+    let patterns = Defaults[.ignoreRegexp]
+    if patterns != compiledIgnoredRegexpPatterns {
+      compiledIgnoredRegexpPatterns = patterns
+      compiledIgnoredRegexps = patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    }
+
+    return compiledIgnoredRegexps
   }
 
   private func isEmptyString(_ item: NSPasteboardItem) -> Bool {
