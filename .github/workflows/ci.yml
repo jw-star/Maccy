@@ -30,8 +30,8 @@ jobs:
         include:
           - os: macos-26
             xcode: latest-stable
-          - os: macos-15
-            xcode: "16.4"
+          - os: macos-26
+            xcode: "26.5"
     env:
       CI: "true"
       XCODEBUILD_FLAGS: >-

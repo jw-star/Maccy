@@ -17,9 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Xcode 26.6 (Swift 6.3.3) crashes in the SIL optimizer on
+      # FloatingPanel.deinit when building Release.
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: "26.5"
 
       # Ad-hoc signed: keeps the sandbox entitlements (so history lives in the
       # same container as the official build) but is not notarized.
