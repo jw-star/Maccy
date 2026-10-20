@@ -90,7 +90,15 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility { // swiftlint
   }
 
   @ObservationIgnored
-  private(set) lazy var imagePixelSize: NSSize? = item.imageData.flatMap(NSImage.pixelSize(of:))
+  private(set) lazy var imagePixelSize: NSSize? = {
+    if let data = item.storedImageData {
+      return NSImage.pixelSize(of: data)
+    }
+    if let url = item.imageFileURL {
+      return NSImage.pixelSize(of: url)
+    }
+    return nil
+  }()
 
   @ObservationIgnored
   private var resolvedApplication: (bundle: String, name: String?)?
@@ -170,13 +178,9 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility { // swiftlint
       return
     }
     thumbnailImageGenerationTask = Task { [weak self] in
-      guard let data = self?.item.imageData else { return }
-      let image = await HistoryItemDecorator.downsampledImage(
-        from: data,
-        fitting: HistoryItemDecorator.thumbnailImageSize
-      )
+      let image = await self?.downsampledImage(fitting: HistoryItemDecorator.thumbnailImageSize)
       try Task.checkCancellation()
-      self?.thumbnailImage = image
+      self?.thumbnailImage = image ?? nil
     }
   }
 
@@ -192,13 +196,9 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility { // swiftlint
       return
     }
     previewImageGenerationTask = Task { [weak self] in
-      guard let data = self?.item.imageData else { return }
-      let image = await HistoryItemDecorator.downsampledImage(
-        from: data,
-        fitting: HistoryItemDecorator.previewImageSize
-      )
+      let image = await self?.downsampledImage(fitting: HistoryItemDecorator.previewImageSize)
       try Task.checkCancellation()
-      self?.previewImage = image
+      self?.previewImage = image ?? nil
     }
   }
 
@@ -236,9 +236,28 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility { // swiftlint
   }
 
   @MainActor
-  private static func downsampledImage(from data: Data, fitting size: NSSize) async -> NSImage? {
+  private func downsampledImage(fitting size: NSSize) async -> NSImage? {
+    // Prefer bytes already stored on the item. A copied photo may only have a file URL.
+    let storedImageData = item.storedImageData
+    let imageFileURL = storedImageData == nil ? item.imageFileURL : nil
+    return await Self.downsampledImage(data: storedImageData, fileURL: imageFileURL, fitting: size)
+  }
+
+  private static func downsampledImage(
+    data: Data?,
+    fileURL: URL?,
+    fitting size: NSSize
+  ) async -> NSImage? {
     let scale = NSScreen.forPopup?.backingScaleFactor ?? 2
-    guard let image = await NSImage.downsampled(from: data, fitting: size, scale: scale) else {
+    let image: DownsampledImage?
+    if let data {
+      image = await NSImage.downsampled(from: data, fitting: size, scale: scale)
+    } else if let fileURL {
+      image = await NSImage.downsampled(from: fileURL, fitting: size, scale: scale)
+    } else {
+      image = nil
+    }
+    guard let image else {
       return nil
     }
 

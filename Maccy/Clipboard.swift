@@ -229,7 +229,8 @@ class Clipboard {
       return
     }
 
-    let historyItem = HistoryItem(contents: contents)
+    // A copied photo is often only a file URL, so the history row would show the path.
+    let historyItem = HistoryItem(contents: withImageData(fromFilesIn: contents))
 
     if #unavailable(macOS 15.0) {
       // On macOS 14 the history item needs to be inserted into storage directly after creating it.
@@ -240,6 +241,40 @@ class Clipboard {
     historyItem.title = historyItem.generateTitle()
 
     onNewCopyHooks.forEach({ $0(historyItem) })
+  }
+
+  // Copies the bytes of image files into the item while the pasteboard can still read them.
+  // Sandbox access to the original file does not survive, so the preview has to be stored.
+  private func withImageData(fromFilesIn contents: [HistoryItemContent]) -> [HistoryItemContent] {
+    guard !Defaults[.enabledPasteboardTypes].isDisjoint(with: StorageType.images.types) else {
+      return contents
+    }
+    let imageTypeNames = Set(StorageType.images.types.map(\.rawValue))
+    guard !contents.contains(where: { imageTypeNames.contains($0.type) }) else {
+      return contents
+    }
+
+    let fileURLs: [URL] = contents.compactMap { content in
+      guard content.type == NSPasteboard.PasteboardType.fileURL.rawValue,
+            let data = content.value else {
+        return nil
+      }
+      return URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true)
+    }
+    // A mixed selection keeps its paths. Only an all-image selection is previewed.
+    guard !fileURLs.isEmpty, fileURLs.allSatisfy(HistoryItem.isImageFile) else {
+      return contents
+    }
+
+    var contents = contents
+    for url in fileURLs {
+      guard let type = HistoryItem.pasteboardType(forImageFile: url),
+            let data = HistoryItem.imageData(at: url) else {
+        continue
+      }
+      contents.append(HistoryItemContent(type: type.rawValue, value: data))
+    }
+    return contents
   }
 
   private func shouldIgnore(_ types: Set<NSPasteboard.PasteboardType>) -> Bool {

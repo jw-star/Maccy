@@ -73,6 +73,8 @@ class HistoryItem {
     NSPasteboard.PasteboardType.notesRichText.rawValue
   ]
   private static let imageTypes: [NSPasteboard.PasteboardType] = StorageType.images.types
+  // Copied photos often arrive as a file URL ("….jpg") with no image bytes.
+  static let imageFileExtensions: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "heic", "heif"]
 
   var application: String?
   var firstCopiedAt: Date = Date.now
@@ -104,13 +106,15 @@ class HistoryItem {
 
   @MainActor
   func generateTitle() -> String {
-    let pasteboardImageData = contentData(Self.imageTypes)
-    let universalClipboardImageURL = universalClipboardImage ? fileURLs.first : nil
-    guard pasteboardImageData == nil && universalClipboardImageURL == nil else {
+    let pasteboardImageData = storedImageData
+    // A readable image file is shown as a picture. Leave the path as the title when
+    // the file cannot be read, so the row is not blank.
+    let imageURL = pasteboardImageData == nil && imagesEnabled ? readableImageFileURL : nil
+    guard pasteboardImageData == nil && imageURL == nil else {
       Task {
         if let recognizedText = await Self.recognizeText(
           imageData: pasteboardImageData,
-          fileURL: universalClipboardImageURL
+          fileURL: imageURL
         ) {
           self.title = recognizedText
         }
@@ -174,17 +178,75 @@ class HistoryItem {
     return NSAttributedString(html: data, documentAttributes: nil)
   }
 
-  var imageData: Data? {
-    var data: Data?
-    data = contentData(Self.imageTypes)
-    if data == nil, universalClipboardImage, let url = fileURLs.first {
-      data = try? Data(contentsOf: url)
-    }
+  /// Image bytes stored on the item. Does not read a file URL.
+  var storedImageData: Data? { contentData(Self.imageTypes) }
 
-    return data
+  /// First copied file that is an image, for example a photo copied from Finder.
+  var imageFileURL: URL? {
+    fileURLs.first { Self.isImageFile($0) }
   }
 
-  var hasImage: Bool { contentData(Self.imageTypes) != nil || universalClipboardImage }
+  var imageData: Data? {
+    if let data = storedImageData {
+      return data
+    }
+    guard let url = imageFileURL else {
+      return nil
+    }
+
+    return Self.imageData(at: url)
+  }
+
+  var hasImage: Bool {
+    storedImageData != nil || (imagesEnabled && readableImageFileURL != nil)
+  }
+
+  private var imagesEnabled: Bool {
+    !Defaults[.enabledPasteboardTypes].isDisjoint(with: StorageType.images.types)
+  }
+
+  static func isImageFile(_ url: URL) -> Bool {
+    imageFileExtensions.contains(url.pathExtension.lowercased())
+  }
+
+  static func pasteboardType(forImageFile url: URL) -> NSPasteboard.PasteboardType? {
+    switch url.pathExtension.lowercased() {
+    case "jpg", "jpeg":
+      return .jpeg
+    case "png":
+      return .png
+    case "tif", "tiff":
+      return .tiff
+    case "heic", "heif":
+      return .heic
+    default:
+      return nil
+    }
+  }
+
+  /// Reads an image file while pasteboard access is still valid.
+  static func imageData(at url: URL) -> Data? {
+    let accessed = url.startAccessingSecurityScopedResource()
+    defer {
+      if accessed {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    return try? Data(contentsOf: url)
+  }
+
+  private var readableImageFileURL: URL? {
+    guard let url = imageFileURL else {
+      return nil
+    }
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+          !isDirectory.boolValue,
+          FileManager.default.isReadableFile(atPath: url.path) else {
+      return nil
+    }
+    return url
+  }
 
   var image: NSImage? {
     if let img = cachedDecodedImage {
@@ -232,7 +294,6 @@ class HistoryItem {
   var fromMaccy: Bool { contentData([.fromMaccy]) != nil }
   var universalClipboard: Bool { contentData([.universalClipboard]) != nil }
 
-  private var universalClipboardImage: Bool { universalClipboard && fileURLs.first?.pathExtension == "jpeg" }
   private var universalClipboardText: Bool {
     universalClipboard && contentData([.html, .tiff, .png, .jpeg, .rtf, .string, .heic]) != nil
   }

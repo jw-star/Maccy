@@ -101,6 +101,22 @@ class HistoryItemDecoratorTests: XCTestCase {
     XCTAssertEqual(itemDecorator.accessibilityLabel, "foo")
   }
 
+  func testCopiedJpegFilePreviewsFromItsURL() async throws {
+    let url = try jpegFile(named: "2026-08-16 13.22.40.jpg")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let itemDecorator = historyItemDecorator(url)
+    XCTAssertEqual(itemDecorator.title, "")
+    XCTAssertTrue(itemDecorator.hasImage)
+    XCTAssertNil(itemDecorator.item.storedImageData)
+
+    let thumbnailImage = await itemDecorator.asyncGetThumbnailImage()
+    XCTAssertNotNil(thumbnailImage)
+    XCTAssertGreaterThan(thumbnailImage?.size.width ?? 0, 0)
+    XCTAssertGreaterThan(thumbnailImage?.size.height ?? 0, 0)
+    XCTAssertLessThanOrEqual(thumbnailImage?.size.height ?? 0, CGFloat(Defaults[.imageMaxHeight]))
+  }
+
   func testFile() {
     let url = URL(fileURLWithPath: "/tmp/foo.bar")
     let itemDecorator = historyItemDecorator(url)
@@ -239,6 +255,25 @@ class HistoryItemDecoratorTests: XCTestCase {
     item.numberOfCopies = 2
 
     return HistoryItemDecorator(item)
+  }
+
+  private func jpegFile(named name: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+    let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: 20,
+      pixelsHigh: 10,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    )!
+    let data = try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:]))
+    try data.write(to: url)
+    return url
   }
 
   private func pngData(width: Int, height: Int) -> Data {

@@ -403,6 +403,42 @@ class ClipboardTests: XCTestCase {
     waitForExpectations(timeout: 2)
   }
 
+  func testCopiedImageFileIsStoredAsImageData() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("2026-08-16 13.22.40.jpg")
+    let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: 8,
+      pixelsHigh: 4,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    )!
+    let data = try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:]))
+    try data.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let hookExpectation = expectation(description: "Hook is called")
+    clipboard.onNewCopy({ (item: HistoryItem) in
+      XCTAssertEqual(item.title, "")
+      XCTAssertTrue(item.hasImage)
+      XCTAssertTrue(item.contents.contains {
+        $0.type == NSPasteboard.PasteboardType.jpeg.rawValue && $0.value == data
+      })
+      hookExpectation.fulfill()
+    })
+
+    clipboard.start()
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+
+    waitForExpectations(timeout: 2)
+  }
+
   private func frontmostAppBundleIdentifier() throws -> String {
     guard let bundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else {
       throw XCTSkip("No frontmost application to attribute a copy to")
