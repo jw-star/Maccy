@@ -30,8 +30,8 @@ jobs:
         include:
           - os: macos-26
             xcode: latest-stable
-          - os: macos-15
-            xcode: "16.4"
+          - os: macos-26
+            xcode: "26.5"
     env:
       CI: "true"
       XCODEBUILD_FLAGS: >-
@@ -67,7 +67,7 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          xcodebuild build-for-testing $XCODEBUILD_FLAGS | tee build.log | xcbeautify --renderer github-actions
+          xcodebuild build-for-testing $XCODEBUILD_FLAGS 2>&1 | tee build.log | xcbeautify --renderer github-actions
 
       # Tests occasionally hang on hosted runners (a MainActor job is never
       # scheduled while XCTWaiter spins the run loop). Re-run only the tests
@@ -79,7 +79,7 @@ jobs:
           if xcodebuild test-without-building $XCODEBUILD_FLAGS $TEST_FLAGS \
               -only-testing:MaccyTests \
               -resultBundlePath TestResults.xcresult \
-              | tee test.log | xcbeautify --renderer github-actions; then
+              2>&1 | tee test.log | xcbeautify --renderer github-actions; then
             exit 0
           fi
           failing=$(sed -n '/^Failing tests:/,/^\*\* TEST/p' test.log \
@@ -92,7 +92,7 @@ jobs:
           only=$(printf -- '-only-testing:%s ' $failing)
           if xcodebuild test-without-building $XCODEBUILD_FLAGS $TEST_FLAGS $only \
               -resultBundlePath TestResults-retry.xcresult \
-              | tee test-retry.log | xcbeautify --renderer github-actions; then
+              2>&1 | tee test-retry.log | xcbeautify --renderer github-actions; then
             for t in $failing; do echo "::warning::Flaky test (failed or hung, passed on re-run): $t"; done
             exit 0
           fi
@@ -102,7 +102,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}-xcode-${{ matrix.xcode }}
           path: |
             TestResults.xcresult
             TestResults-retry.xcresult
