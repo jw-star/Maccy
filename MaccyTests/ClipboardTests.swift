@@ -26,6 +26,7 @@ class ClipboardTests: XCTestCase {
   let savedIgnoreAllAppsExceptListed = Defaults[.ignoreAllAppsExceptListed]
   let savedIgnoredApps = Defaults[.ignoredApps]
   let savedIgnoredPasteboardTypes = Defaults[.ignoredPasteboardTypes]
+  let savedIgnoreRegexp = Defaults[.ignoreRegexp]
 
   override func setUp() {
     super.setUp()
@@ -41,6 +42,7 @@ class ClipboardTests: XCTestCase {
     Defaults[.ignoreAllAppsExceptListed] = savedIgnoreAllAppsExceptListed
     Defaults[.ignoredApps] = savedIgnoredApps
     Defaults[.ignoredPasteboardTypes] = savedIgnoredPasteboardTypes
+    Defaults[.ignoreRegexp] = savedIgnoreRegexp
     MainActor.assumeIsolated {
       Clipboard.shared.clearHooks()
     }
@@ -189,6 +191,64 @@ class ClipboardTests: XCTestCase {
     })
     clipboard.start()
     pasteboard.declareTypes([.string, customType], owner: nil)
+    pasteboard.setString("bar", forType: .string)
+    waitForExpectations(timeout: 2)
+  }
+
+  func testIgnoreRegexp() {
+    Defaults[.ignoreRegexp] = ["^b.r$"]
+
+    let hookExpectation = expectation(description: "Hook is called")
+    hookExpectation.isInverted = true
+    clipboard.onNewCopy({ (_: HistoryItem) in
+      hookExpectation.fulfill()
+    })
+    clipboard.start()
+    pasteboard.declareTypes([.string], owner: nil)
+    pasteboard.setString("bar", forType: .string)
+    waitForExpectations(timeout: 2)
+  }
+
+  func testIgnoreRegexpAfterInvalidRegexp() {
+    Defaults[.ignoreRegexp] = ["[", "^b.r$"]
+
+    let hookExpectation = expectation(description: "Hook is called")
+    hookExpectation.isInverted = true
+    clipboard.onNewCopy({ (_: HistoryItem) in
+      hookExpectation.fulfill()
+    })
+    clipboard.start()
+    pasteboard.declareTypes([.string], owner: nil)
+    pasteboard.setString("bar", forType: .string)
+    waitForExpectations(timeout: 2)
+  }
+
+  func testDoesNotIgnoreWithOnlyInvalidRegexp() {
+    Defaults[.ignoreRegexp] = ["["]
+
+    let hookExpectation = expectation(description: "Hook is called")
+    clipboard.onNewCopy({ (_: HistoryItem) in
+      hookExpectation.fulfill()
+    })
+    clipboard.start()
+    pasteboard.declareTypes([.string], owner: nil)
+    pasteboard.setString("bar", forType: .string)
+    waitForExpectations(timeout: 2)
+  }
+
+  func testIgnoreRegexpUsesUpdatedRules() {
+    Defaults[.ignoreRegexp] = ["^foo$"]
+    clipboard.copyInMaccy("foo")
+
+    Defaults[.ignoreRegexp] = ["^b.r$"]
+
+    let hookExpectation = expectation(description: "Hook is called")
+    hookExpectation.isInverted = true
+    clipboard.onNewCopy({ (_: HistoryItem) in
+      hookExpectation.fulfill()
+    })
+    clipboard.start()
+    pasteboard.declareTypes([.string], owner: nil)
     pasteboard.setString("bar", forType: .string)
     waitForExpectations(timeout: 2)
   }
