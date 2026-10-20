@@ -88,7 +88,7 @@ struct GeneralSettingsPane: View {
           Text("PasteAutomatically", tableName: "GeneralSettings")
         }
         .onChange { isOn in
-          updatePasteByDefault(isOn)
+          Self.updatePasteByDefault(isOn)
           refreshModifiers(isOn)
         }
         .fixedSize()
