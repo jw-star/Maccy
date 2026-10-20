@@ -21,9 +21,6 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      # Swift 6.3 crashes in the SIL optimizer (EarlyPerfInliner on
-      # FloatingPanel.deinit) when compiling Release for x86_64, so only arm64
-      # is built.
       # Ad-hoc signed: keeps the sandbox entitlements (so history lives in the
       # same container as the official build) but is not notarized.
       - name: Build Release app
@@ -34,7 +31,6 @@ jobs:
             -scheme Maccy \
             -configuration Release \
             -destination "generic/platform=macOS" \
-            ARCHS=arm64 \
             -derivedDataPath DerivedData \
             CODE_SIGN_IDENTITY=- \
             CODE_SIGN_STYLE=Manual \
@@ -47,7 +43,7 @@ jobs:
           app=DerivedData/Build/Products/Release/Maccy.app
           codesign --verify --deep --verbose=2 "$app"
           version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$app/Contents/Info.plist")
-          name="Maccy-${version}-arm64-$(git rev-parse --short HEAD)"
+          name="Maccy-${version}-$(git rev-parse --short HEAD)"
           mkdir dmg-root
           cp -R "$app" dmg-root/
           ln -s /Applications dmg-root/Applications
