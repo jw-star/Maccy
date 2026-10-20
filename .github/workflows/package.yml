@@ -31,6 +31,9 @@ jobs:
 
       # Ad-hoc signed: keeps the sandbox entitlements (so history lives in the
       # same container as the official build) but is not notarized.
+      # Hardened runtime must be off: its library validation rejects the
+      # ad-hoc signed Sparkle.framework ("different Team IDs") and dyld aborts
+      # the app at launch.
       - name: Build Release app
         run: |
           set -o pipefail
@@ -44,8 +47,28 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM= \
+            ENABLE_HARDENED_RUNTIME=NO \
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
             $VERSION_OVERRIDE \
             2>&1 | tee build.log | xcbeautify --renderer github-actions
+
+      - name: Check app launches
+        run: |
+          app=DerivedData/Build/Products/Release/Maccy.app
+          codesign -dvvv --entitlements - "$app" 2>&1 | tee codesign.txt
+          if grep -q 'flags=.*runtime' codesign.txt; then
+            echo "::error::Main executable is signed with hardened runtime"
+            exit 1
+          fi
+          "$app/Contents/MacOS/Maccy" > launch.log 2>&1 &
+          pid=$!
+          sleep 10
+          if ! kill -0 "$pid" 2>/dev/null; then
+            cat launch.log
+            echo "::error::Maccy exited during launch"
+            exit 1
+          fi
+          kill "$pid"
 
       - name: Create DMG
         run: |
@@ -87,5 +110,7 @@ jobs:
         if: failure()
         with:
           name: package-build-log
-          path: build.log
+          path: |
+            build.log
+            launch.log
           if-no-files-found: ignore
